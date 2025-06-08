@@ -564,32 +564,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_stock_query(update, context)
     elif data == "card_favorites":
         await show_card_favorites(update, context)
+    elif data == "admin_panel":
+        await show_admin_panel(update, context)
 
 # 顯示主選單
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # 創建自定義鍵盤
+    # 創建自定義鍵盤 - 根據截圖布局
     keyboard = [
-        # 第一行：三個愛心按鈕
+        # 第一行：賬戶信息、賬戶充值、國家/卡頭查詢
         [
-            InlineKeyboardButton("裸庫❤️", callback_data="naked_stock"),
-            InlineKeyboardButton("特價❤️", callback_data="special_price"),
-            InlineKeyboardButton("全資❤️", callback_data="full_fund")
+            InlineKeyboardButton("👤賬戶信息", callback_data="check_balance"),
+            InlineKeyboardButton("💰賬戶充值", callback_data="account_recharge"),
+            InlineKeyboardButton("🔍國家/卡頭查詢", callback_data="stock_query")
         ],
-        # 第二行：語言和信息按鈕
+        # 第二行：全資料、裸料、商家基地
         [
-            InlineKeyboardButton("English", callback_data="english"),
-            InlineKeyboardButton("中文", callback_data="chinese"),
-            InlineKeyboardButton("售價信息", callback_data="price_info"),
-            InlineKeyboardButton("賬戶充值", callback_data="account_recharge")
+            InlineKeyboardButton("📊全資料", callback_data="full_fund"),
+            InlineKeyboardButton("📋裸料", callback_data="naked_stock"),
+            InlineKeyboardButton("🏪商家基地", callback_data="browse")
         ],
-        # 第三行：主要功能按鈕
+        # 第三行：售價信息、卡頭庫存、卡頭收藏
         [
-            InlineKeyboardButton("選頭購買", callback_data="browse"),
-            InlineKeyboardButton("庫存卡頭查詢", callback_data="stock_query"),
-            InlineKeyboardButton("訂單記錄", callback_data="my_orders"),
-            InlineKeyboardButton("卡頭收藏", callback_data="card_favorites")
+            InlineKeyboardButton("💵售價信息", callback_data="price_info"),
+            InlineKeyboardButton("📦卡頭庫存", callback_data="stock_query"),
+            InlineKeyboardButton("⭐卡頭收藏", callback_data="card_favorites")
+        ],
+        # 第四行：English、聯繫客服、商家面板
+        [
+            InlineKeyboardButton("🌐English", callback_data="english"),
+            InlineKeyboardButton("💬聯繫客服", callback_data="support"),
+            InlineKeyboardButton("🛠️商家面板", callback_data="admin_panel")
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1445,6 +1451,68 @@ async def show_card_favorites(update: Update, context: ContextTypes.DEFAULT_TYPE
     keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    await safe_edit_message(query, text, reply_markup)
+
+# 商家面板
+async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    # 檢查是否為管理員
+    if user_id not in config.ADMIN_IDS:
+        text = """
+🛠️ 商家面板
+
+抱歉，您沒有權限訪問商家面板
+如需申請商家權限，請聯繫客服
+
+💬 客服聯繫方式：
+Telegram: @your_support_bot
+        """
+        keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+    else:
+        # 獲取統計數據
+        conn = sqlite3.connect(config.DATABASE_NAME)
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM orders WHERE date(order_time) = date('now')")
+        today_orders = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM products WHERE status = 'available'")
+        available_cards = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM products WHERE status = 'sold'")
+        sold_cards = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(DISTINCT user_id) FROM orders")
+        total_customers = c.fetchone()[0]
+        
+        c.execute("SELECT SUM(total_deposited) FROM user_wallets")
+        total_deposits = c.fetchone()[0] or 0
+        
+        conn.close()
+        
+        text = f"""
+🛠️ 商家面板
+
+📊 今日統計：
+• 今日訂單：{today_orders} 筆
+• 可用卡片：{available_cards} 張
+• 已售卡片：{sold_cards} 張
+• 總客戶數：{total_customers} 人
+• 總充值額：${total_deposits:.2f} USDT
+
+⚙️ 管理功能：
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 詳細統計", callback_data="admin_stats")],
+            [InlineKeyboardButton("💳 錢包管理", callback_data="wallet_admin")],
+            [InlineKeyboardButton("📦 庫存管理", callback_data="stock_admin")],
+            [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
 
 # 管理員命令
