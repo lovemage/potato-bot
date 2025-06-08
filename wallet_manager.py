@@ -166,12 +166,15 @@ class WalletManager:
         try:
             # TronGrid API查詢TRC20交易
             url = f"https://api.trongrid.io/v1/accounts/{address}/transactions/trc20"
+            headers = {
+                'TRON-PRO-API-KEY': config.TRONGRID_API_KEY
+            }
             params = {
                 'limit': 20,
                 'contract_address': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'  # USDT TRC20合約地址
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 
@@ -198,9 +201,12 @@ class WalletManager:
         """獲取交易確認數"""
         try:
             url = f"https://api.trongrid.io/wallet/gettransactionbyid"
+            headers = {
+                'TRON-PRO-API-KEY': config.TRONGRID_API_KEY
+            }
             data = {"value": txid}
             
-            response = requests.post(url, json=data, timeout=10)
+            response = requests.post(url, json=data, headers=headers, timeout=10)
             if response.status_code == 200:
                 tx_data = response.json()
                 if 'blockNumber' in tx_data:
@@ -217,7 +223,10 @@ class WalletManager:
         """獲取當前區塊高度"""
         try:
             url = "https://api.trongrid.io/wallet/getnowblock"
-            response = requests.post(url, timeout=10)
+            headers = {
+                'TRON-PRO-API-KEY': config.TRONGRID_API_KEY
+            }
+            response = requests.post(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 return data.get('block_header', {}).get('raw_data', {}).get('number', 0)

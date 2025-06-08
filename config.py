@@ -9,12 +9,12 @@ BOT_TOKEN = "7685096733:AAHw2frruU-kNN_HpLzmx3QjIDqbOPqBxPA"  # ✅ 已設置實
 ADMIN_IDS = [7935635650]  # ⚠️ 請替換為您的 Telegram ID，可以添加多個管理員
 
 # USDT 支付配置
-USDT_ADDRESS = "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"  # 🔥 您的主要 USDT TRC20 收款地址
-TRONGRID_API_KEY = "your_trongrid_api_key"  # TronGrid API 密鑰（可選，用於高級功能）
+USDT_ADDRESS = "TQVS6n4XfzkayhjKRFQA2YdSxkW1TjAACk"  # 🔥 您的主要 USDT TRC20 收款地址
+TRONGRID_API_KEY = "99b6aeac-7358-4218-aa7e-354950693767"  # TronGrid API 密鑰
 
 # 支付配置
 PAYMENT_METHODS = {
-    "USDT_TRC20": "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",  # 🔥 您的 USDT TRC20 地址
+    "USDT_TRC20": "TQVS6n4XfzkayhjKRFQA2YdSxkW1TjAACk",  # 🔥 您的 USDT TRC20 地址
     "PAYPAL": "your-paypal@email.com",  # ⚠️ 請替換為您的 PayPal 郵箱
     "ALIPAY": "your-alipay-account",  # ⚠️ 請替換為您的支付寶帳號
     "STRIPE_PUBLIC_KEY": "pk_test_xxxxxxxxxx",  # Stripe 公鑰

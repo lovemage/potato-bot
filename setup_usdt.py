@@ -9,13 +9,9 @@ import config
 def setup_usdt_addresses():
     """設置 USDT 地址池"""
     
-    # 示例 USDT TRC20 地址池（⚠️ 請替換為您的真實地址）
+    # 真實 USDT TRC20 地址池（目前只有一個地址）
     usdt_addresses = [
-        'TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE',  # 主地址
-        'TLyqzVGLV1srkB7dToTAEqgDSfPtXRJZYH',  # 地址1  
-        'TMuA6YqfCeX8EhbfYEg5y7S4DqzSJireY9',  # 地址2
-        'TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax',  # 地址3
-        'TYASr5UV6HEcXatwdFQT1HjwqjiLtqLQD6'   # 地址4
+        'TQVS6n4XfzkayhjKRFQA2YdSxkW1TjAACk'  # 主地址
     ]
     
     conn = sqlite3.connect(config.DATABASE_NAME)
