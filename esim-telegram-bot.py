@@ -483,6 +483,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     
+    # 清除任何等待狀態（除非是充值相關按鈕）
+    if not data.startswith("account_recharge") and not data.startswith("check_balance"):
+        context.user_data.pop('waiting_for_recharge_amount', None)
+    
     # 首先回應查詢，避免超時
     try:
         await query.answer()
@@ -701,6 +705,47 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"無法轉發給管理員 {admin_id}: {e}")
     
     await update.message.reply_text("✅ 付款憑證已收到，我們將盡快為您確認訂單。")
+
+# 處理文本消息
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """處理用戶發送的文本消息"""
+    user_data = context.user_data
+    text = update.message.text.strip()
+    
+    # 檢查是否在等待充值金額輸入
+    if user_data.get('waiting_for_recharge_amount'):
+        try:
+            amount = float(text)
+            
+            # 檢查最小充值金額
+            if amount < 20:
+                await update.message.reply_text(
+                    "❌ 充值金額不能少於 20 USDT\n\n請重新輸入充值金額："
+                )
+                return
+            
+            # 檢查最大充值金額（可選）
+            if amount > 10000:
+                await update.message.reply_text(
+                    "❌ 單次充值金額不能超過 10,000 USDT\n\n請重新輸入充值金額："
+                )
+                return
+            
+            # 清除等待狀態
+            user_data['waiting_for_recharge_amount'] = False
+            
+            # 顯示充值地址
+            await show_recharge_address(update, context, amount)
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ 請輸入有效的數字金額\n\n例如：50 或 100.5\n\n請重新輸入："
+            )
+    else:
+        # 如果不在特定狀態，顯示幫助信息
+        await update.message.reply_text(
+            "🤖 請使用選單按鈕進行操作\n\n如需幫助，請點擊 /start 重新開始"
+        )
 
 # 新增功能處理函數
 
@@ -1196,20 +1241,48 @@ async def show_account_recharge(update: Update, context: ContextTypes.DEFAULT_TY
     wallet_manager.get_or_create_wallet(user_id, username)
     current_balance = wallet_manager.get_balance(user_id)
     
+    text = f"""
+💰 賬戶充值
+
+當前餘額: ${current_balance:.2f} USDT
+
+請輸入需要充值的金額，最小充值金額為20 USDT
+
+請注意！充值金額以到賬金額為主，手續費自理
+
+請直接輸入數字（例如：50）
+    """
+    
+    # 設置用戶狀態為等待充值金額輸入
+    context.user_data['waiting_for_recharge_amount'] = True
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await safe_edit_message(query, text, reply_markup)
+
+# 顯示充值地址
+async def show_recharge_address(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float):
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
     # 為用戶分配充值地址
     recharge_address = wallet_manager.assign_usdt_address(user_id)
     
     text = f"""
 💰 賬戶充值
 
-當前餘額: ${current_balance:.2f} USDT
+充值金額: ${amount:.2f} USDT
 
 📱 您的專屬充值地址：
 `{recharge_address}`
 
 充值說明：
 • 僅支持TRC20網絡USDT
-• 最低充值金額：5 USDT
+• 請準確轉入 ${amount:.2f} USDT
 • 到賬時間：1-3個區塊確認
 • 充值後自動到賬，無需聯繫客服
 
@@ -1217,6 +1290,7 @@ async def show_account_recharge(update: Update, context: ContextTypes.DEFAULT_TY
 • 請勿使用交易所直接轉賬
 • 僅支持USDT，其他幣種將丟失
 • 請確認網絡為TRC20
+• 手續費自理，請確保到賬金額準確
     """
     
     keyboard = [
@@ -1227,7 +1301,10 @@ async def show_account_recharge(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await safe_edit_message(query, text, reply_markup, parse_mode='Markdown')
+    if update.callback_query:
+        await safe_edit_message(update.callback_query, text, reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 # 查看餘額
 async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1423,6 +1500,7 @@ def main():
     application.add_handler(CommandHandler("stats", admin_stats))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     print("🚀 Bot 正在啟動...")
     print(f"📊 管理員 ID: {config.ADMIN_IDS}")
