@@ -1,0 +1,1 @@
+worker: python esim-telegram-bot.py 
