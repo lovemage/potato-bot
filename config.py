@@ -8,9 +8,13 @@ BOT_TOKEN = "7685096733:AAHw2frruU-kNN_HpLzmx3QjIDqbOPqBxPA"  # ✅ 已設置實
 # 管理員配置
 ADMIN_IDS = [7935635650]  # ⚠️ 請替換為您的 Telegram ID，可以添加多個管理員
 
+# USDT 支付配置
+USDT_ADDRESS = "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE"  # 🔥 您的主要 USDT TRC20 收款地址
+TRONGRID_API_KEY = "your_trongrid_api_key"  # TronGrid API 密鑰（可選，用於高級功能）
+
 # 支付配置
 PAYMENT_METHODS = {
-    "USDT_TRC20": "TXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",  # ⚠️ 請替換為您的 USDT TRC20 地址
+    "USDT_TRC20": "TQn9Y2khEsLJW1ChVWFMSMeRDow5KcbLSE",  # 🔥 您的 USDT TRC20 地址
     "PAYPAL": "your-paypal@email.com",  # ⚠️ 請替換為您的 PayPal 郵箱
     "ALIPAY": "your-alipay-account",  # ⚠️ 請替換為您的支付寶帳號
     "STRIPE_PUBLIC_KEY": "pk_test_xxxxxxxxxx",  # Stripe 公鑰
@@ -27,7 +31,7 @@ SUPPORT_EMAIL = "support@yourdomain.com"     # ⚠️ 請替換為您的客服�
 DATABASE_NAME = "esim_store.db"
 
 # API 配置
-TRONGRID_API_KEY = "your_trongrid_api_key"  # TronGrid API 密鑰，用於驗證 USDT 交易
+# TRONGRID_API_KEY 已移至 USDT 支付配置區域
 
 # 安全配置
 RATE_LIMIT_MAX_CALLS = 10  # 每分鐘最大請求數
