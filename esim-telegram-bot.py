@@ -593,13 +593,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_naked_country_details(update, context)
         elif data.startswith("buy_card_"):
             card_id = int(data.replace("buy_card_", ""))
-            await handle_purchase(update, context, card_id)
+            await handle_pick_purchase(update, context, card_id)
         elif data.startswith("buy_full_"):
             card_id = int(data.replace("buy_full_", ""))
-            await handle_full_purchase(update, context, card_id)
+            await handle_full_pick_purchase(update, context, card_id)
         elif data.startswith("confirm_full_"):
             card_id = int(data.replace("confirm_full_", ""))
             await confirm_full_purchase(update, context, card_id)
+        elif data.startswith("confirm_pick_"):
+            card_id = int(data.replace("confirm_pick_", ""))
+            await confirm_pick_purchase(update, context, card_id)
+        elif data.startswith("confirm_full_pick_"):
+            card_id = int(data.replace("confirm_full_pick_", ""))
+            await confirm_full_pick_purchase(update, context, card_id)
         elif data.startswith("realtime_"):
             await show_realtime_cards(update, context)
         elif data.startswith("random_buy_") or data.startswith("random_"):
@@ -1036,66 +1042,133 @@ async def show_realtime_cards(update: Update, context: ContextTypes.DEFAULT_TYPE
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
 
-# 隨機購買功能
+# 隨機購買功能 - 先顯示數量選擇
 async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
     data = query.data
     if data.startswith("random_buy_"):
+        # 顯示數量選擇
         country = data.replace("random_buy_", "")
-        quantity = 1
+        await show_random_quantity_selection(update, context, country)
     elif data.startswith("random_"):
+        # 處理具體數量的隨機購買
         parts = data.split("_")
         quantity = int(parts[1])
         country = "_".join(parts[2:])
+        await process_random_purchase(update, context, country, quantity)
+
+# 顯示隨機購買數量選擇
+async def show_random_quantity_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, country: str):
+    query = update.callback_query
     
-    # 獲取隨機卡片 - 從cards表（裸庫）
+    # 檢查庫存
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("""SELECT id, card_number, expiry_date, security_code, price 
-                 FROM cards 
-                 WHERE country = ? AND status = 'available' 
-                 ORDER BY RANDOM() 
-                 LIMIT ?""", (country, quantity))
-    cards = c.fetchall()
+    c.execute("SELECT COUNT(*) FROM cards WHERE country = ? AND status = 'available'", (country,))
+    available_count = c.fetchone()[0]
     conn.close()
     
-    if not cards:
+    if available_count == 0:
         text = f"❌ {country} 暫無可用卡片"
         keyboard = [[InlineKeyboardButton("🔙 返回", callback_data=f"naked_country_{country}")]]
     else:
-        # 計算總價 - 隨機購買使用特殊價格
-        if quantity == 1:
-            total_price = 2.50  # 單張隨機購買價格
-        elif quantity == 3:
-            total_price = 7.00
-        elif quantity == 4:
-            total_price = 8.00
-        elif quantity == 5:
-            total_price = 8.00
-        else:
-            total_price = quantity * 2.50  # 多張按單價計算
+        text = f"🎲 {country} 隨機購買\n\n"
+        text += f"📦 可用庫存: {available_count}張\n\n"
+        text += "💰 價格表:\n"
+        text += "• 1張: $2.50 USDT\n"
+        text += "• 3張: $7.00 USDT\n"
+        text += "• 4張: $8.00 USDT\n"
+        text += "• 5張: $8.00 USDT\n\n"
+        text += "請選擇購買數量："
         
-        text = f"🎲 隨機選中 {quantity} 張卡片\n\n"
-        text += f"隨機購買總價: ${total_price:.2f} USDT\n\n"
-        text += "選中的卡片:\n"
+        keyboard = []
+        # 根據庫存顯示可用選項
+        if available_count >= 1:
+            keyboard.append([InlineKeyboardButton("🎲 隨機1張 ($2.50)", callback_data=f"random_1_{country}")])
+        if available_count >= 3:
+            keyboard.append([InlineKeyboardButton("🎲 隨機3張 ($7.00)", callback_data=f"random_3_{country}")])
+        if available_count >= 4:
+            keyboard.append([InlineKeyboardButton("🎲 隨機4張 ($8.00)", callback_data=f"random_4_{country}")])
+        if available_count >= 5:
+            keyboard.append([InlineKeyboardButton("🎲 隨機5張 ($8.00)", callback_data=f"random_5_{country}")])
         
-        for card_id, card_number, expiry_date, security_code, price in cards:
-            masked_number = card_number[:4] + "****" + card_number[-4:]
-            single_price = 2.50 if quantity == 1 else total_price / quantity
-            text += f"💳 {masked_number} | {expiry_date} | ${single_price:.2f}\n"
-        
-        text += "\n確認購買嗎？"
-        
-        # 將卡片ID列表存儲在callback_data中
-        card_ids = ",".join(str(card[0]) for card in cards)
-        keyboard = [
-            [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_random_{card_ids}")],
-            [InlineKeyboardButton("🔙 返回", callback_data=f"naked_country_{country}")]
-        ]
+        keyboard.append([InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
+
+# 處理具體數量的隨機購買
+async def process_random_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, country: str, quantity: int):
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    
+    # 計算總價
+    if quantity == 1:
+        total_price = 2.50
+    elif quantity == 3:
+        total_price = 7.00
+    elif quantity == 4:
+        total_price = 8.00
+    elif quantity == 5:
+        total_price = 8.00
+    else:
+        total_price = quantity * 2.50
+    
+    if current_balance < total_price:
+        text = f"❌ 餘額不足\n\n"
+        text += f"需要金額: ${total_price:.2f} USDT\n"
+        text += f"當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"需要充值: ${total_price - current_balance:.2f} USDT\n\n"
+        text += "請先充值後再購買"
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")]
+        ]
+    else:
+        # 隨機選擇卡片
+        conn = sqlite3.connect(config.DATABASE_NAME)
+        c = conn.cursor()
+        c.execute("""SELECT id, card_number, expiry_date, security_code, price 
+                     FROM cards 
+                     WHERE country = ? AND status = 'available' 
+                     ORDER BY RANDOM() 
+                     LIMIT ?""", (country, quantity))
+        cards = c.fetchall()
+        
+        if len(cards) < quantity:
+            text = f"❌ 庫存不足，僅剩 {len(cards)} 張卡片"
+            keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")]]
+        else:
+            # 扣除餘額並標記卡片為已售出
+            wallet_manager.deduct_balance(user_id, total_price, f"隨機購買{quantity}張{country}卡片")
+            
+            # 標記卡片為已售出
+            for card_id, _, _, _, _ in cards:
+                c.execute("UPDATE cards SET status = 'sold' WHERE id = ?", (card_id,))
+            conn.commit()
+            
+            # 創建訂單記錄
+            order_ids = []
+            for card_id, _, _, _, _ in cards:
+                order_id = create_order(user_id, username, card_id, 'naked')
+                if order_id:
+                    order_ids.append(order_id)
+            
+            # 生成卡片文件並發送
+            await send_cards_file(update, context, cards, total_price, current_balance - total_price, 'naked')
+            
+        conn.close()
+    
+    if 'keyboard' in locals():
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await safe_edit_message(query, text, reply_markup)
 
 # 挑頭功能
 async def show_pick_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1402,43 +1475,69 @@ async def show_full_realtime_cards(update: Update, context: ContextTypes.DEFAULT
 # 全資料隨機購買
 async def handle_full_random_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
     
     country = query.data.replace("full_random_", "")
     
-    # 隨機選擇一張卡片
-    conn = sqlite3.connect(config.DATABASE_NAME)
-    c = conn.cursor()
-    c.execute("""SELECT id, card_number, expiry_date, security_code, price, personal_info 
-                 FROM full_data 
-                 WHERE country = ? AND status = 'available' 
-                 ORDER BY RANDOM() 
-                 LIMIT 1""", (country,))
-    card = c.fetchone()
-    conn.close()
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    random_price = 4.00  # 全資料隨機購買價格
     
-    if not card:
-        text = f"❌ {country} 暫無可用全資料卡片"
-        keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")]]
-    else:
-        card_id, card_number, expiry_date, security_code, price, personal_info = card
-        masked_number = card_number[:4] + "****" + card_number[-4:]
-        
-        # 隨機購買使用特殊價格
-        random_price = 4.00
-        
-        text = f"🎲 隨機選中的全資料卡片\n\n"
-        text += f"💳 卡號: {masked_number}\n"
-        text += f"📅 到期: {expiry_date}\n"
-        text += f"💰 隨機購買價格: ${random_price:.2f} USDT\n"
-        text += f"🌍 國家: {country}\n"
-        text += f"👤 個人信息預覽: {personal_info[:50]}...\n\n"
-        text += "確認購買此卡片嗎？"
+    if current_balance < random_price:
+        text = f"❌ 餘額不足\n\n"
+        text += f"需要金額: ${random_price:.2f} USDT\n"
+        text += f"當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"需要充值: ${random_price - current_balance:.2f} USDT\n\n"
+        text += "請先充值後再購買"
         
         keyboard = [
-            [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_full_{card_id}")],
-            [InlineKeyboardButton("🎲 重新隨機", callback_data=f"full_random_{country}")],
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
             [InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")]
         ]
+    else:
+        # 隨機選擇一張卡片
+        conn = sqlite3.connect(config.DATABASE_NAME)
+        c = conn.cursor()
+        c.execute("""SELECT id, card_number, expiry_date, security_code, price, personal_info 
+                     FROM full_data 
+                     WHERE country = ? AND status = 'available' 
+                     ORDER BY RANDOM() 
+                     LIMIT 1""", (country,))
+        card = c.fetchone()
+        
+        if not card:
+            text = f"❌ {country} 暫無可用全資料卡片"
+            keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")]]
+        else:
+            card_id, card_number, expiry_date, security_code, price, personal_info = card
+            
+            # 執行購買
+            try:
+                # 扣除餘額
+                wallet_manager.deduct_balance(user_id, random_price, f"隨機購買{country}全資料卡片")
+                
+                # 標記卡片為已售出
+                c.execute("UPDATE full_data SET status = 'sold' WHERE id = ?", (card_id,))
+                conn.commit()
+                
+                # 創建訂單記錄
+                order_id = create_order(user_id, username, card_id, 'full')
+                
+                # 發送卡片文件
+                cards = [(card_id, card_number, expiry_date, security_code, country, personal_info, price)]
+                await send_cards_file(update, context, cards, random_price, current_balance - random_price, 'full')
+                
+                conn.close()
+                return  # 成功處理，直接返回
+                
+            except Exception as e:
+                logger.error(f"全資料購買處理失敗: {e}")
+                text = f"❌ 購買處理失敗，請重試"
+                keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+        
+        conn.close()
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
@@ -1741,6 +1840,9 @@ async def show_recharge_address(update: Update, context: ContextTypes.DEFAULT_TY
     # 為用戶分配充值地址
     recharge_address = wallet_manager.assign_usdt_address(user_id)
     
+    # 生成QR碼
+    qr_code_path = await generate_qr_code(recharge_address, amount)
+    
     text = f"""
 💰 賬戶充值
 
@@ -1770,10 +1872,53 @@ async def show_recharge_address(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if update.callback_query:
-        await safe_edit_message(update.callback_query, text, reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    try:
+        # 發送QR碼圖片
+        if qr_code_path:
+            with open(qr_code_path, 'rb') as qr_file:
+                if update.callback_query:
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=qr_file,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='Markdown'
+                    )
+                    # 刪除原消息
+                    try:
+                        await update.callback_query.message.delete()
+                    except:
+                        pass
+                else:
+                    await update.message.reply_photo(
+                        photo=qr_file,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='Markdown'
+                    )
+        else:
+            # 如果QR碼生成失敗，只發送文字
+            if update.callback_query:
+                await safe_edit_message(update.callback_query, text, reply_markup)
+            else:
+                await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+                
+    except Exception as e:
+        logger.error(f"發送充值信息失敗: {e}")
+        # 備用方案：只發送文字
+        if update.callback_query:
+            await safe_edit_message(update.callback_query, text, reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    
+    finally:
+        # 清理QR碼文件
+        if qr_code_path:
+            try:
+                import os
+                os.unlink(qr_code_path)
+            except:
+                pass
 
 # 查看餘額
 async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2039,6 +2184,414 @@ def main():
     
     # 啟動 bot
     application.run_polling()
+
+# 發送卡片文件給用戶
+async def send_cards_file(update: Update, context: ContextTypes.DEFAULT_TYPE, cards, total_price, remaining_balance, card_type='naked'):
+    """生成並發送卡片文件給用戶"""
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 生成文件內容
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"cards_{card_type}_{user_id}_{timestamp}.txt"
+    
+    file_content = f"🎉 購買成功！\n"
+    file_content += f"用戶: {username}\n"
+    file_content += f"購買時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    file_content += f"卡片類型: {'裸庫' if card_type == 'naked' else '全資料'}\n"
+    file_content += f"購買數量: {len(cards)}張\n"
+    file_content += f"支付金額: ${total_price:.2f} USDT\n"
+    file_content += f"剩餘餘額: ${remaining_balance:.2f} USDT\n"
+    file_content += "=" * 50 + "\n\n"
+    
+    for i, card in enumerate(cards, 1):
+        if card_type == 'naked':
+            card_id, card_number, expiry_date, security_code, price = card
+            file_content += f"卡片 {i}:\n"
+            file_content += f"卡號: {card_number}\n"
+            file_content += f"到期日期: {expiry_date}\n"
+            file_content += f"安全碼: {security_code}\n"
+        else:  # full data
+            card_id, card_number, expiry_date, security_code, country, personal_info, price = card
+            file_content += f"卡片 {i}:\n"
+            file_content += f"卡號: {card_number}\n"
+            file_content += f"到期日期: {expiry_date}\n"
+            file_content += f"安全碼: {security_code}\n"
+            file_content += f"國家: {country}\n"
+            file_content += f"個人信息: {personal_info}\n"
+        
+        file_content += "-" * 30 + "\n"
+    
+    file_content += "\n⚠️ 重要提醒:\n"
+    file_content += "• 請妥善保存此文件\n"
+    file_content += "• 卡片信息僅供合法用途\n"
+    file_content += "• 如有問題請聯繫客服\n"
+    file_content += f"• 客服: {config.SUPPORT_USERNAME}\n"
+    
+    # 創建臨時文件
+    import tempfile
+    import os
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as temp_file:
+        temp_file.write(file_content)
+        temp_file_path = temp_file.name
+    
+    try:
+        # 發送文件
+        with open(temp_file_path, 'rb') as file:
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=file,
+                filename=filename,
+                caption=f"✅ 購買成功！\n\n💳 {len(cards)}張卡片\n💰 支付: ${total_price:.2f} USDT\n💵 餘額: ${remaining_balance:.2f} USDT\n\n請查看附件獲取完整卡片信息"
+            )
+        
+        # 發送成功消息
+        success_text = f"✅ 購買完成！\n\n"
+        success_text += f"📦 已購買 {len(cards)} 張卡片\n"
+        success_text += f"💰 支付金額: ${total_price:.2f} USDT\n"
+        success_text += f"💵 剩餘餘額: ${remaining_balance:.2f} USDT\n\n"
+        success_text += "📄 卡片信息已通過文件發送\n"
+        success_text += "請查看上方文件獲取完整信息"
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 查看餘額", callback_data="check_balance")],
+            [InlineKeyboardButton("🛒 繼續購買", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            await safe_edit_message(update.callback_query, success_text, reply_markup)
+        else:
+            await context.bot.send_message(chat_id=user_id, text=success_text, reply_markup=reply_markup)
+            
+    except Exception as e:
+        logger.error(f"發送文件失敗: {e}")
+        # 如果文件發送失敗，直接在消息中顯示卡片信息
+        await send_cards_text(update, context, cards, total_price, remaining_balance, card_type)
+    
+    finally:
+        # 清理臨時文件
+        try:
+            os.unlink(temp_file_path)
+        except:
+            pass
+
+# 備用方案：直接發送卡片文本信息
+async def send_cards_text(update: Update, context: ContextTypes.DEFAULT_TYPE, cards, total_price, remaining_balance, card_type='naked'):
+    """備用方案：直接發送卡片文本信息"""
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    text = f"✅ 購買成功！\n\n"
+    text += f"💳 {len(cards)}張卡片信息:\n"
+    text += f"💰 支付: ${total_price:.2f} USDT\n"
+    text += f"💵 餘額: ${remaining_balance:.2f} USDT\n"
+    text += "=" * 30 + "\n\n"
+    
+    for i, card in enumerate(cards, 1):
+        if card_type == 'naked':
+            card_id, card_number, expiry_date, security_code, price = card
+            text += f"卡片{i}: {card_number}|{expiry_date}|{security_code}\n"
+        else:  # full data
+            card_id, card_number, expiry_date, security_code, country, personal_info, price = card
+            text += f"卡片{i}: {card_number}|{expiry_date}|{security_code}|{personal_info}\n"
+    
+    text += "\n⚠️ 請妥善保存卡片信息"
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 查看餘額", callback_data="check_balance")],
+        [InlineKeyboardButton("🛒 繼續購買", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        await safe_edit_message(update.callback_query, text, reply_markup)
+    else:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+# 處理挑選購買
+async def handle_pick_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    """處理挑選購買邏輯"""
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 獲取卡片詳情
+    card = get_card_details(card_id, 'naked')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    pick_price = 5.00  # 挑選購買價格
+    
+    if current_balance < pick_price:
+        text = f"❌ 餘額不足\n\n"
+        text += f"需要金額: ${pick_price:.2f} USDT\n"
+        text += f"當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"需要充值: ${pick_price - current_balance:.2f} USDT\n\n"
+        text += "請先充值後再購買"
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回選擇", callback_data=f"pick_card_{country}")]
+        ]
+    else:
+        # 顯示卡片詳情並確認購買
+        masked_number = card_number[:4] + "****" + card_number[-4:]
+        
+        text = f"🎯 挑選購買確認\n\n"
+        text += f"💳 卡號: {masked_number}\n"
+        text += f"📅 到期: {expiry_date}\n"
+        text += f"🌍 國家: {country}\n"
+        text += f"💰 挑選價格: ${pick_price:.2f} USDT\n"
+        text += f"💵 當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"💵 購買後餘額: ${current_balance - pick_price:.2f} USDT\n\n"
+        text += "確認購買此卡片嗎？"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_pick_{card_id}")],
+            [InlineKeyboardButton("🔙 返回選擇", callback_data=f"pick_card_{country}")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 確認挑選購買
+async def confirm_pick_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    """確認挑選購買並完成交易"""
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 獲取卡片詳情
+    card = get_card_details(card_id, 'naked')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    pick_price = 5.00  # 挑選購買價格
+    
+    if current_balance < pick_price:
+        text = f"❌ 餘額不足，無法完成購買"
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+        ]
+    else:
+        # 執行購買
+        try:
+            # 扣除餘額
+            wallet_manager.deduct_balance(user_id, pick_price, f"挑選購買{country}卡片")
+            
+            # 標記卡片為已售出
+            conn = sqlite3.connect(config.DATABASE_NAME)
+            c = conn.cursor()
+            c.execute("UPDATE cards SET status = 'sold' WHERE id = ?", (card_id,))
+            conn.commit()
+            conn.close()
+            
+            # 創建訂單記錄
+            order_id = create_order(user_id, username, card_id, 'naked')
+            
+            # 發送卡片文件
+            cards = [(card_id, card_number, expiry_date, security_code, price)]
+            await send_cards_file(update, context, cards, pick_price, current_balance - pick_price, 'naked')
+            
+            return  # 成功處理，直接返回
+            
+        except Exception as e:
+            logger.error(f"購買處理失敗: {e}")
+            text = f"❌ 購買處理失敗，請重試"
+            keyboard = [
+                [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+            ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# QR碼生成函數
+async def generate_qr_code(address: str, amount: float = None) -> str:
+    """生成USDT地址的QR碼"""
+    try:
+        import qrcode
+        import tempfile
+        import os
+        
+        # 構建QR碼內容
+        if amount:
+            qr_content = f"tron:{address}?amount={amount}"
+        else:
+            qr_content = address
+        
+        # 生成QR碼
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_content)
+        qr.make(fit=True)
+        
+        # 創建QR碼圖片
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # 保存到臨時文件
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+            img.save(temp_file.name)
+            return temp_file.name
+            
+    except ImportError:
+        logger.warning("qrcode模塊未安裝，無法生成QR碼")
+        return None
+    except Exception as e:
+        logger.error(f"生成QR碼失敗: {e}")
+        return None
+
+# 處理全資料挑選購買
+async def handle_full_pick_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    """處理全資料挑選購買邏輯"""
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 獲取卡片詳情
+    card = get_card_details(card_id, 'full')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, personal_info, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    pick_price = 6.00  # 全資料挑選購買價格
+    
+    if current_balance < pick_price:
+        text = f"❌ 餘額不足\n\n"
+        text += f"需要金額: ${pick_price:.2f} USDT\n"
+        text += f"當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"需要充值: ${pick_price - current_balance:.2f} USDT\n\n"
+        text += "請先充值後再購買"
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回選擇", callback_data=f"full_pick_{country}")]
+        ]
+    else:
+        # 顯示卡片詳情並確認購買
+        masked_number = card_number[:4] + "****" + card_number[-4:]
+        info_preview = personal_info[:100] + "..." if len(personal_info) > 100 else personal_info
+        
+        text = f"💰 全資料挑選購買確認\n\n"
+        text += f"💳 卡號: {masked_number}\n"
+        text += f"📅 到期: {expiry_date}\n"
+        text += f"🌍 國家: {country}\n"
+        text += f"👤 個人信息: {info_preview}\n"
+        text += f"💰 挑選價格: ${pick_price:.2f} USDT\n"
+        text += f"💵 當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"💵 購買後餘額: ${current_balance - pick_price:.2f} USDT\n\n"
+        text += "確認購買此全資料卡片嗎？"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_full_pick_{card_id}")],
+            [InlineKeyboardButton("🔙 返回選擇", callback_data=f"full_pick_{country}")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 確認全資料挑選購買
+async def confirm_full_pick_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    """確認全資料挑選購買並完成交易"""
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 獲取卡片詳情
+    card = get_card_details(card_id, 'full')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, personal_info, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    pick_price = 6.00  # 全資料挑選購買價格
+    
+    if current_balance < pick_price:
+        text = f"❌ 餘額不足，無法完成購買"
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+        ]
+    else:
+        # 執行購買
+        try:
+            # 扣除餘額
+            wallet_manager.deduct_balance(user_id, pick_price, f"挑選購買{country}全資料卡片")
+            
+            # 標記卡片為已售出
+            conn = sqlite3.connect(config.DATABASE_NAME)
+            c = conn.cursor()
+            c.execute("UPDATE full_data SET status = 'sold' WHERE id = ?", (card_id,))
+            conn.commit()
+            conn.close()
+            
+            # 創建訂單記錄
+            order_id = create_order(user_id, username, card_id, 'full')
+            
+            # 發送卡片文件
+            cards = [(card_id, card_number, expiry_date, security_code, country, personal_info, price)]
+            await send_cards_file(update, context, cards, pick_price, current_balance - pick_price, 'full')
+            
+            return  # 成功處理，直接返回
+            
+        except Exception as e:
+            logger.error(f"全資料購買處理失敗: {e}")
+            text = f"❌ 購買處理失敗，請重試"
+            keyboard = [
+                [InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]
+            ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
 
 if __name__ == '__main__':
     main()
