@@ -10,6 +10,65 @@ logger = logging.getLogger(__name__)
 class WalletManager:
     def __init__(self):
         self.db_name = config.DATABASE_NAME
+        self.init_tables()
+    
+    def init_tables(self):
+        """初始化錢包相關數據庫表"""
+        conn = sqlite3.connect(self.db_name)
+        c = conn.cursor()
+        
+        # 用戶錢包表
+        c.execute('''CREATE TABLE IF NOT EXISTS user_wallets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER UNIQUE NOT NULL,
+            username TEXT,
+            balance REAL DEFAULT 0.0,
+            total_deposited REAL DEFAULT 0.0,
+            total_spent REAL DEFAULT 0.0,
+            created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        # 交易記錄表
+        c.execute('''CREATE TABLE IF NOT EXISTS transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            transaction_type TEXT NOT NULL,
+            amount REAL NOT NULL,
+            balance_before REAL NOT NULL,
+            balance_after REAL NOT NULL,
+            description TEXT,
+            txid TEXT,
+            order_id INTEGER,
+            created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        # USDT地址表
+        c.execute('''CREATE TABLE IF NOT EXISTS usdt_addresses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            address TEXT UNIQUE NOT NULL,
+            user_id INTEGER,
+            is_used BOOLEAN DEFAULT FALSE,
+            created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        
+        # 充值記錄表
+        c.execute('''CREATE TABLE IF NOT EXISTS deposits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            amount REAL NOT NULL,
+            usdt_address TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            txid TEXT,
+            confirmations INTEGER DEFAULT 0,
+            created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            confirmed_time TIMESTAMP
+        )''')
+        
+        conn.commit()
+        conn.close()
     
     def get_or_create_wallet(self, user_id, username):
         """獲取或創建用戶錢包"""
@@ -43,12 +102,15 @@ class WalletManager:
         conn.close()
         return result[0] if result else 0.0
     
-    def add_balance(self, user_id, username, amount, description="充值", txid=None):
+    def add_balance(self, user_id, amount, description="充值", username=None, txid=None):
         """增加用戶餘額"""
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
         
         try:
+            # 確保用戶錢包存在
+            self.get_or_create_wallet(user_id, username)
+            
             # 獲取當前餘額
             current_balance = self.get_balance(user_id)
             new_balance = current_balance + amount
@@ -75,12 +137,15 @@ class WalletManager:
         finally:
             conn.close()
     
-    def deduct_balance(self, user_id, username, amount, description="購買", order_id=None):
+    def deduct_balance(self, user_id, amount, description="購買", username=None, order_id=None):
         """扣除用戶餘額"""
         conn = sqlite3.connect(self.db_name)
         c = conn.cursor()
         
         try:
+            # 確保用戶錢包存在
+            self.get_or_create_wallet(user_id, username)
+            
             # 獲取當前餘額
             current_balance = self.get_balance(user_id)
             

@@ -843,6 +843,38 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(
                 "❌ 請輸入有效的數字金額\n\n例如：50 或 100.5\n\n請重新輸入："
             )
+    
+    # 檢查是否在等待隨機購買數量輸入
+    elif user_data.get('waiting_for_random_quantity'):
+        try:
+            quantity = int(text)
+            country = user_data.get('waiting_for_random_quantity')
+            
+            # 檢查數量是否有效
+            if quantity <= 0:
+                await update.message.reply_text("❌ 請輸入有效的數量（大於0）")
+                return
+            
+            # 檢查庫存
+            conn = sqlite3.connect(config.DATABASE_NAME)
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM cards WHERE country = ? AND status = 'available'", (country,))
+            available_count = c.fetchone()[0]
+            conn.close()
+            
+            if quantity > available_count:
+                await update.message.reply_text(f"❌ 庫存不足，目前僅有 {available_count} 張可用")
+                return
+            
+            # 清除等待狀態
+            user_data.pop('waiting_for_random_quantity', None)
+            
+            # 處理隨機購買
+            await process_random_purchase_from_input(update, context, country, quantity)
+            
+        except ValueError:
+            await update.message.reply_text("❌ 請輸入有效的數字")
+    
     else:
         # 如果不在特定狀態，顯示幫助信息
         await update.message.reply_text(
@@ -1042,15 +1074,15 @@ async def show_realtime_cards(update: Update, context: ContextTypes.DEFAULT_TYPE
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
 
-# 隨機購買功能 - 先顯示數量選擇
+# 隨機購買功能 - 客戶自行輸入數量
 async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
     data = query.data
     if data.startswith("random_buy_"):
-        # 顯示數量選擇
+        # 提示客戶輸入數量
         country = data.replace("random_buy_", "")
-        await show_random_quantity_selection(update, context, country)
+        await ask_random_quantity_input(update, context, country)
     elif data.startswith("random_"):
         # 處理具體數量的隨機購買
         parts = data.split("_")
@@ -1058,8 +1090,8 @@ async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_T
         country = "_".join(parts[2:])
         await process_random_purchase(update, context, country, quantity)
 
-# 顯示隨機購買數量選擇
-async def show_random_quantity_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, country: str):
+# 提示客戶輸入隨機購買數量
+async def ask_random_quantity_input(update: Update, context: ContextTypes.DEFAULT_TYPE, country: str):
     query = update.callback_query
     
     # 檢查庫存
@@ -1079,21 +1111,14 @@ async def show_random_quantity_selection(update: Update, context: ContextTypes.D
         text += "• 1張: $2.50 USDT\n"
         text += "• 3張: $7.00 USDT\n"
         text += "• 4張: $8.00 USDT\n"
-        text += "• 5張: $8.00 USDT\n\n"
-        text += "請選擇購買數量："
+        text += "• 5張: $8.00 USDT\n"
+        text += "• 其他數量: $2.50/張\n\n"
+        text += f"請輸入您要購買的數量 (1-{available_count})："
         
-        keyboard = []
-        # 根據庫存顯示可用選項
-        if available_count >= 1:
-            keyboard.append([InlineKeyboardButton("🎲 隨機1張 ($2.50)", callback_data=f"random_1_{country}")])
-        if available_count >= 3:
-            keyboard.append([InlineKeyboardButton("🎲 隨機3張 ($7.00)", callback_data=f"random_3_{country}")])
-        if available_count >= 4:
-            keyboard.append([InlineKeyboardButton("🎲 隨機4張 ($8.00)", callback_data=f"random_4_{country}")])
-        if available_count >= 5:
-            keyboard.append([InlineKeyboardButton("🎲 隨機5張 ($8.00)", callback_data=f"random_5_{country}")])
+        keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")]]
         
-        keyboard.append([InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")])
+        # 設置等待輸入狀態
+        context.user_data['waiting_for_random_quantity'] = country
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
@@ -2592,6 +2617,78 @@ async def confirm_full_pick_purchase(update: Update, context: ContextTypes.DEFAU
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     await safe_edit_message(query, text, reply_markup)
+
+# 處理來自輸入的隨機購買
+async def process_random_purchase_from_input(update: Update, context: ContextTypes.DEFAULT_TYPE, country: str, quantity: int):
+    """處理用戶輸入數量的隨機購買"""
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    
+    # 計算總價
+    if quantity == 1:
+        total_price = 2.50
+    elif quantity == 3:
+        total_price = 7.00
+    elif quantity == 4:
+        total_price = 8.00
+    elif quantity == 5:
+        total_price = 8.00
+    else:
+        total_price = quantity * 2.50
+    
+    if current_balance < total_price:
+        text = f"❌ 餘額不足\n\n"
+        text += f"需要金額: ${total_price:.2f} USDT\n"
+        text += f"當前餘額: ${current_balance:.2f} USDT\n"
+        text += f"需要充值: ${total_price - current_balance:.2f} USDT\n\n"
+        text += "請先充值後再購買"
+        
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        # 隨機選擇卡片
+        conn = sqlite3.connect(config.DATABASE_NAME)
+        c = conn.cursor()
+        c.execute("""SELECT id, card_number, expiry_date, security_code, price 
+                     FROM cards 
+                     WHERE country = ? AND status = 'available' 
+                     ORDER BY RANDOM() 
+                     LIMIT ?""", (country, quantity))
+        cards = c.fetchall()
+        
+        if len(cards) < quantity:
+            text = f"❌ 庫存不足，僅剩 {len(cards)} 張卡片"
+            keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"naked_country_{country}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup)
+        else:
+            # 扣除餘額並標記卡片為已售出
+            wallet_manager.deduct_balance(user_id, total_price, f"隨機購買{quantity}張{country}卡片")
+            
+            # 標記卡片為已售出
+            for card_id, _, _, _, _ in cards:
+                c.execute("UPDATE cards SET status = 'sold' WHERE id = ?", (card_id,))
+            conn.commit()
+            
+            # 創建訂單記錄
+            order_ids = []
+            for card_id, _, _, _, _ in cards:
+                order_id = create_order(user_id, username, card_id, 'naked')
+                if order_id:
+                    order_ids.append(order_id)
+            
+            # 生成卡片文件並發送
+            await send_cards_file(update, context, cards, total_price, current_balance - total_price, 'naked')
+            
+        conn.close()
 
 if __name__ == '__main__':
     main()
