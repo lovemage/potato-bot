@@ -957,25 +957,21 @@ async def show_naked_country_details(update: Update, context: ContextTypes.DEFAU
         # 構建詳細信息文本
         text = f"當前區域: 高質 {code} C 60-80%\n\n"
         
-        # 顯示價格統計
-        for price, price_count in price_stats:
-            if price == min_price:
-                text += f"零售價: {price:.2f} (USDT)\n"
-            elif len(price_stats) > 1:
-                text += f"批頭價: {price:.2f} (USDT)\n"
+        # 顯示價格信息
+        text += f"💰 價格信息:\n"
+        text += f"隨機購買: $2.50 USDT\n"
+        text += f"挑選購買: ${max_price:.2f} USDT\n\n"
         
-        # 添加隨機價格選項
-        if len(price_stats) >= 3:
-            text += f"隨機3頭價:7.00(USDT)\n"
-        if len(price_stats) >= 4:
-            text += f"隨機4頭價:8.00(USDT)\n"
-        if len(price_stats) >= 5:
-            text += f"隨機5頭價:8.00(USDT)\n"
+        # 添加隨機多張價格選項
+        if count >= 3:
+            text += f"隨機3張: $7.00 USDT\n"
+        if count >= 4:
+            text += f"隨機4張: $8.00 USDT\n"
+        if count >= 5:
+            text += f"隨機5張: $8.00 USDT\n"
         
-        text += f"\n批發價：\n"
-        text += f"批發數量： 50,批發價格： 5.5000 (USDT)\n"
-        text += f"庫存數量: {count}\n\n"
-        text += "請選擇購買方式"
+        text += f"\n📦 庫存數量: {count}張\n\n"
+        text += "請選擇購買方式："
         
         # 構建按鈕
         keyboard = [
@@ -1348,15 +1344,15 @@ async def show_full_country_details(update: Update, context: ContextTypes.DEFAUL
         keyboard = [[InlineKeyboardButton("🔙 返回全資料", callback_data="full_fund")]]
     else:
         text = f"💰 {country} 全資料卡頭\n\n"
-        text += f"庫存數量: {count}\n"
-        text += f"價格範圍: ${min_price:.2f} - ${max_price:.2f}\n\n"
         
-        # 顯示價格統計
-        text += "價格詳情:\n"
-        for price, price_count in price_stats:
-            text += f"${price:.2f} USDT - {price_count}張\n"
+        # 顯示價格信息
+        text += f"💰 價格信息:\n"
+        text += f"隨機購買: $4.00 USDT\n"
+        text += f"挑選購買: ${max_price:.2f} USDT\n\n"
         
-        text += "\n全資料包含完整個人信息，適合高級用途"
+        text += f"📦 庫存數量: {count}張\n\n"
+        text += "💎 全資料包含完整個人信息，適合高級用途\n\n"
+        text += "請選擇購買方式："
         
         # 構建按鈕
         keyboard = [
@@ -1673,17 +1669,29 @@ async def show_price_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     text = "💰 售價信息\n\n"
-    text += "🔒 裸庫卡片:\n"
-    for country, min_price, max_price, count, card_type in price_data:
-        if card_type == 'naked':
-            text += f"{country}: ${min_price:.2f}-${max_price:.2f} ({count}張)\n"
     
-    text += "\n💰 全資料卡片:\n"
-    for country, min_price, max_price, count, card_type in price_data:
-        if card_type == 'full':
-            text += f"{country}: ${min_price:.2f}-${max_price:.2f} ({count}張)\n"
+    text += "🔒 裸庫卡片價格:\n"
+    text += "• 隨機購買: $2.50 USDT\n"
+    text += "• 挑選購買: $5.00 USDT\n"
+    text += "• 隨機3張: $7.00 USDT\n"
+    text += "• 隨機4張: $8.00 USDT\n"
+    text += "• 隨機5張: $8.00 USDT\n\n"
     
-    text += "\n💳 支付方式: USDT (TRC20)"
+    text += "💰 全資料卡片價格:\n"
+    text += "• 隨機購買: $4.00 USDT\n"
+    text += "• 挑選購買: $6.00 USDT\n\n"
+    
+    text += "📊 庫存統計:\n"
+    text += "🔒 裸庫: "
+    naked_total = sum(count for _, _, _, count, card_type in price_data if card_type == 'naked')
+    text += f"{naked_total}張\n"
+    
+    text += "💰 全資料: "
+    full_total = sum(count for _, _, _, count, card_type in price_data if card_type == 'full')
+    text += f"{full_total}張\n\n"
+    
+    text += "💳 支付方式: USDT (TRC20)\n"
+    text += "💎 全資料包含完整個人信息"
     
     keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
