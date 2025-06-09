@@ -28,7 +28,7 @@ SUPPORT_EMAIL = "support@yourdomain.com"     # ⚠️ 請替換為您的客服�
 # ==================== 以下配置可保持默認值 ====================
 
 # 數據庫配置
-DATABASE_NAME = "esim_store.db"
+DATABASE_NAME = "esim_bot.db"
 
 # API 配置
 # TRONGRID_API_KEY 已移至 USDT 支付配置區域

@@ -76,52 +76,94 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 獲取所有國家/地區
+# 獲取所有國家/地區 - 更新為讀取cards和full_data表
 def get_countries():
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("SELECT DISTINCT country FROM products WHERE status = 'available' ORDER BY country")
+    
+    # 從兩個表中獲取所有可用的國家
+    c.execute("""
+        SELECT DISTINCT country FROM cards WHERE status = 'available'
+        UNION
+        SELECT DISTINCT country FROM full_data WHERE status = 'available'
+        ORDER BY country
+    """)
     countries = [row[0] for row in c.fetchall()]
     conn.close()
     return countries
 
-# 獲取特定國家的卡片
+# 獲取特定國家的卡片 - 更新為讀取cards和full_data表
 def get_cards_by_country(country):
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("""SELECT id, card_number, expiry_date, security_code, price 
-                 FROM products 
+    
+    # 從裸庫表獲取卡片
+    c.execute("""SELECT id, card_number, expiry_date, security_code, price, 'naked' as type
+                 FROM cards 
                  WHERE country = ? AND status = 'available' 
                  ORDER BY price""", (country,))
-    cards = c.fetchall()
+    naked_cards = c.fetchall()
+    
+    # 從全資料表獲取卡片
+    c.execute("""SELECT id, card_number, expiry_date, security_code, price, 'full' as type
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available' 
+                 ORDER BY price""", (country,))
+    full_cards = c.fetchall()
+    
+    # 合併結果
+    all_cards = naked_cards + full_cards
     conn.close()
-    return cards
+    return all_cards
 
-# 獲取卡片詳情
-def get_card_details(card_id):
+# 獲取卡片詳情 - 更新為支持兩個表
+def get_card_details(card_id, card_type='naked'):
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("""SELECT * FROM products WHERE id = ?""", (card_id,))
+    
+    if card_type == 'full':
+        c.execute("""SELECT * FROM full_data WHERE id = ?""", (card_id,))
+    else:
+        c.execute("""SELECT * FROM cards WHERE id = ?""", (card_id,))
+    
     card = c.fetchone()
     conn.close()
     return card
 
-# 創建訂單
-def create_order(user_id, username, card_id):
+# 創建訂單 - 更新為支持兩個表
+def create_order(user_id, username, card_id, card_type='naked'):
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     
+    # 選擇正確的表
+    table_name = 'full_data' if card_type == 'full' else 'cards'
+    
     # 檢查卡片狀態
-    c.execute("SELECT status FROM products WHERE id = ?", (card_id,))
+    c.execute(f"SELECT status FROM {table_name} WHERE id = ?", (card_id,))
     result = c.fetchone()
     
     if result and result[0] == 'available':
-        # 創建訂單
-        c.execute("""INSERT INTO orders (user_id, username, product_id) 
-                     VALUES (?, ?, ?)""", (user_id, username, card_id))
+        # 創建訂單 - 需要先確保orders表存在並適配新結構
+        try:
+            c.execute("""INSERT INTO orders (user_id, username, card_id, card_type, order_time, status) 
+                         VALUES (?, ?, ?, ?, datetime('now'), 'pending')""", 
+                     (user_id, username, card_id, card_type))
+        except sqlite3.OperationalError:
+            # 如果orders表結構不匹配，創建新的orders表
+            c.execute('''CREATE TABLE IF NOT EXISTS orders_new
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER NOT NULL,
+                          username TEXT,
+                          card_id INTEGER NOT NULL,
+                          card_type TEXT DEFAULT 'naked',
+                          order_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          status TEXT DEFAULT 'pending')''')
+            c.execute("""INSERT INTO orders_new (user_id, username, card_id, card_type, order_time, status) 
+                         VALUES (?, ?, ?, ?, datetime('now'), 'pending')""", 
+                     (user_id, username, card_id, card_type))
         
         # 標記卡片為已售出
-        c.execute("UPDATE products SET status = 'sold' WHERE id = ?", (card_id,))
+        c.execute(f"UPDATE {table_name} SET status = 'sold' WHERE id = ?", (card_id,))
         
         conn.commit()
         order_id = c.lastrowid
@@ -131,19 +173,25 @@ def create_order(user_id, username, card_id):
         conn.close()
         return None
 
-# 獲取用戶訂單
+# 獲取用戶訂單 - 更新為支持新的訂單結構
 def get_user_orders(user_id):
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("""
-        SELECT o.id, p.card_number, p.country, o.order_time, o.status
-        FROM orders o
-        JOIN products p ON o.product_id = p.id
-        WHERE o.user_id = ?
-        ORDER BY o.order_time DESC
-        LIMIT 10
-    """, (user_id,))
-    orders = c.fetchall()
+    
+    try:
+        # 嘗試使用新的orders表結構
+        c.execute("""
+            SELECT o.id, o.card_id, o.card_type, o.order_time, o.status
+            FROM orders_new o
+            WHERE o.user_id = ?
+            ORDER BY o.order_time DESC
+            LIMIT 10
+        """, (user_id,))
+        orders = c.fetchall()
+    except sqlite3.OperationalError:
+        # 如果新表不存在，返回空列表
+        orders = []
+    
     conn.close()
     return orders
 
@@ -163,14 +211,24 @@ def update_last_message_id(context: ContextTypes.DEFAULT_TYPE, message_id: int):
 # 安全編輯訊息的輔助函數
 async def safe_edit_message(query, text, reply_markup=None):
     try:
+        logger.info(f"嘗試編輯訊息: {text[:50]}...")
         return await query.edit_message_text(text, reply_markup=reply_markup)
     except Exception as e:
+        logger.warning(f"編輯訊息失敗: {e}")
         # 如果編輯失敗（通常是因為原訊息包含圖片），則刪除原訊息並發送新訊息
         try:
             await query.message.delete()
-        except:
-            pass
-        return await query.message.reply_text(text, reply_markup=reply_markup)
+            logger.info("已刪除原訊息")
+        except Exception as delete_error:
+            logger.warning(f"刪除原訊息失敗: {delete_error}")
+        
+        try:
+            logger.info("嘗試發送新訊息")
+            return await query.message.reply_text(text, reply_markup=reply_markup)
+        except Exception as reply_error:
+            logger.error(f"發送新訊息失敗: {reply_error}")
+            # 最後嘗試直接發送到聊天
+            return await query.message.chat.send_message(text, reply_markup=reply_markup)
 
 # 命令處理器
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -483,6 +541,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     
+    logger.info(f"處理按鈕回調: {data}")
+    
     # 清除任何等待狀態（除非是充值相關按鈕）
     if not data.startswith("account_recharge") and not data.startswith("check_balance"):
         context.user_data.pop('waiting_for_recharge_amount', None)
@@ -502,70 +562,100 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"刪除上一個訊息時出錯: {e}")
     
-    if data == "browse":
-        await browse_cards(update, context)
-    elif data == "main_menu":
-        await show_main_menu(update, context)
-    elif data.startswith("country_"):
-        country = data.replace("country_", "")
-        await show_country_cards(update, context, country)
-    elif data.startswith("buy_"):
-        card_id = int(data.replace("buy_", ""))
-        await handle_purchase(update, context, card_id)
-    elif data.startswith("confirm_"):
-        card_id = int(data.replace("confirm_", ""))
-        await confirm_purchase(update, context, card_id)
-    elif data.startswith("payment_"):
-        order_id = int(data.replace("payment_", ""))
-        await handle_payment_upload(update, context, order_id)
-    elif data == "help":
-        await show_help(update, context)
-    elif data == "support":
-        await show_support(update, context)
-    elif data == "my_orders":
-        await show_my_orders(update, context)
-    # 新增的按鈕處理
-    elif data == "naked_stock":
-        await show_naked_stock(update, context)
-    elif data.startswith("naked_country_"):
-        await show_naked_country_details(update, context)
-    elif data.startswith("buy_card_"):
-        card_id = int(data.replace("buy_card_", ""))
-        await handle_purchase(update, context, card_id)
-    elif data.startswith("realtime_"):
-        await show_realtime_cards(update, context)
-    elif data.startswith("random_buy_") or data.startswith("random_"):
-        await handle_random_purchase(update, context)
-    elif data.startswith("pick_card_"):
-        await show_pick_cards(update, context)
-    elif data.startswith("confirm_random_"):
-        card_ids = data.replace("confirm_random_", "").split(",")
-        # 處理多卡片購買確認
-        await handle_multiple_purchase(update, context, card_ids)
-    elif data == "special_price":
-        await show_special_price(update, context)
-    elif data == "full_fund":
-        await show_full_fund(update, context)
-    elif data == "english":
-        await set_language_english(update, context)
-    elif data == "chinese":
-        await set_language_chinese(update, context)
-    elif data == "price_info":
-        await show_price_info(update, context)
-    elif data == "account_recharge":
-        await show_account_recharge(update, context)
-    elif data == "check_balance":
-        await check_balance(update, context)
-    elif data == "transaction_history":
-        await show_transaction_history(update, context)
-    elif data == "manual_recharge":
-        await manual_recharge(update, context)
-    elif data == "stock_query":
-        await show_stock_query(update, context)
-    elif data == "card_favorites":
-        await show_card_favorites(update, context)
-    elif data == "admin_panel":
-        await show_admin_panel(update, context)
+    # 添加總體錯誤處理
+    try:
+        if data == "browse":
+            await browse_cards(update, context)
+        elif data == "main_menu":
+            await show_main_menu(update, context)
+        elif data.startswith("country_"):
+            country = data.replace("country_", "")
+            await show_country_cards(update, context, country)
+        elif data.startswith("buy_"):
+            card_id = int(data.replace("buy_", ""))
+            await handle_purchase(update, context, card_id)
+        elif data.startswith("confirm_"):
+            card_id = int(data.replace("confirm_", ""))
+            await confirm_purchase(update, context, card_id)
+        elif data.startswith("payment_"):
+            order_id = int(data.replace("payment_", ""))
+            await handle_payment_upload(update, context, order_id)
+        elif data == "help":
+            await show_help(update, context)
+        elif data == "support":
+            await show_support(update, context)
+        elif data == "my_orders":
+            await show_my_orders(update, context)
+        # 新增的按鈕處理
+        elif data == "naked_stock":
+            await show_naked_stock(update, context)
+        elif data.startswith("naked_country_"):
+            await show_naked_country_details(update, context)
+        elif data.startswith("buy_card_"):
+            card_id = int(data.replace("buy_card_", ""))
+            await handle_purchase(update, context, card_id)
+        elif data.startswith("buy_full_"):
+            card_id = int(data.replace("buy_full_", ""))
+            await handle_full_purchase(update, context, card_id)
+        elif data.startswith("confirm_full_"):
+            card_id = int(data.replace("confirm_full_", ""))
+            await confirm_full_purchase(update, context, card_id)
+        elif data.startswith("realtime_"):
+            await show_realtime_cards(update, context)
+        elif data.startswith("random_buy_") or data.startswith("random_"):
+            await handle_random_purchase(update, context)
+        elif data.startswith("pick_card_"):
+            await show_pick_cards(update, context)
+        elif data.startswith("confirm_random_"):
+            card_ids = data.replace("confirm_random_", "").split(",")
+            # 處理多卡片購買確認
+            await handle_multiple_purchase(update, context, card_ids)
+        elif data == "special_price":
+            await show_special_price(update, context)
+        elif data == "full_fund":
+            await show_full_fund(update, context)
+        elif data.startswith("full_country_"):
+            await show_full_country_details(update, context)
+        elif data.startswith("full_realtime_"):
+            await show_full_realtime_cards(update, context)
+        elif data.startswith("full_random_"):
+            await handle_full_random_purchase(update, context)
+        elif data.startswith("full_pick_"):
+            await show_full_pick_cards(update, context)
+        elif data == "english":
+            await set_language_english(update, context)
+        elif data == "chinese":
+            await set_language_chinese(update, context)
+        elif data == "price_info":
+            await show_price_info(update, context)
+        elif data == "account_recharge":
+            await show_account_recharge(update, context)
+        elif data == "check_balance":
+            await check_balance(update, context)
+        elif data == "transaction_history":
+            await show_transaction_history(update, context)
+        elif data == "manual_recharge":
+            await manual_recharge(update, context)
+        elif data == "stock_query":
+            await show_stock_query(update, context)
+        elif data == "card_favorites":
+            await show_card_favorites(update, context)
+        elif data == "admin_panel":
+            await show_admin_panel(update, context)
+        else:
+            logger.warning(f"未處理的按鈕回調: {data}")
+            await query.answer("功能暫未實現")
+    
+    except Exception as e:
+        logger.error(f"處理按鈕回調時發生錯誤: {e}")
+        try:
+            await query.answer("操作失敗，請重試")
+        except:
+            pass
+        try:
+            await query.message.reply_text("❌ 操作失敗，請重新開始 /start")
+        except:
+            pass
 
 # 顯示主選單
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -759,11 +849,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def show_naked_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # 獲取所有可用國家和庫存統計
+    # 獲取所有可用國家和庫存統計 - 從cards表（裸庫）
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     c.execute("""SELECT country, COUNT(*) as count, MIN(price) as min_price, MAX(price) as max_price
-                 FROM products 
+                 FROM cards 
                  WHERE status = 'available' 
                  GROUP BY country 
                  ORDER BY count DESC""")
@@ -827,17 +917,17 @@ async def show_naked_country_details(update: Update, context: ContextTypes.DEFAU
     # 從callback_data中提取國家名
     country = query.data.replace("naked_country_", "")
     
-    # 獲取該國家的所有可用卡片統計
+    # 獲取該國家的所有可用卡片統計 - 從cards表（裸庫）
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     c.execute("""SELECT COUNT(*), MIN(price), MAX(price) 
-                 FROM products 
+                 FROM cards 
                  WHERE country = ? AND status = 'available'""", (country,))
     count, min_price, max_price = c.fetchone()
     
     # 獲取不同價格區間的統計
     c.execute("""SELECT price, COUNT(*) 
-                 FROM products 
+                 FROM cards 
                  WHERE country = ? AND status = 'available' 
                  GROUP BY price 
                  ORDER BY price""", (country,))
@@ -919,11 +1009,11 @@ async def show_realtime_cards(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     country = query.data.replace("realtime_", "")
     
-    # 獲取該國家的所有可用卡片
+    # 獲取該國家的所有可用卡片 - 從cards表（裸庫）
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     c.execute("""SELECT id, card_number, expiry_date, security_code, price 
-                 FROM products 
+                 FROM cards 
                  WHERE country = ? AND status = 'available' 
                  ORDER BY price ASC 
                  LIMIT 10""", (country,))
@@ -963,11 +1053,11 @@ async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_T
         quantity = int(parts[1])
         country = "_".join(parts[2:])
     
-    # 獲取隨機卡片
+    # 獲取隨機卡片 - 從cards表（裸庫）
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     c.execute("""SELECT id, card_number, expiry_date, security_code, price 
-                 FROM products 
+                 FROM cards 
                  WHERE country = ? AND status = 'available' 
                  ORDER BY RANDOM() 
                  LIMIT ?""", (country, quantity))
@@ -978,9 +1068,9 @@ async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_T
         text = f"❌ {country} 暫無可用卡片"
         keyboard = [[InlineKeyboardButton("🔙 返回", callback_data=f"naked_country_{country}")]]
     else:
-        # 計算總價
+        # 計算總價 - 隨機購買使用特殊價格
         if quantity == 1:
-            total_price = cards[0][4]
+            total_price = 2.50  # 單張隨機購買價格
         elif quantity == 3:
             total_price = 7.00
         elif quantity == 4:
@@ -988,15 +1078,16 @@ async def handle_random_purchase(update: Update, context: ContextTypes.DEFAULT_T
         elif quantity == 5:
             total_price = 8.00
         else:
-            total_price = sum(card[4] for card in cards)
+            total_price = quantity * 2.50  # 多張按單價計算
         
         text = f"🎲 隨機選中 {quantity} 張卡片\n\n"
-        text += f"總價: ${total_price:.2f} USDT\n\n"
+        text += f"隨機購買總價: ${total_price:.2f} USDT\n\n"
         text += "選中的卡片:\n"
         
         for card_id, card_number, expiry_date, security_code, price in cards:
             masked_number = card_number[:4] + "****" + card_number[-4:]
-            text += f"💳 {masked_number} | {expiry_date} | ${price:.2f}\n"
+            single_price = 2.50 if quantity == 1 else total_price / quantity
+            text += f"💳 {masked_number} | {expiry_date} | ${single_price:.2f}\n"
         
         text += "\n確認購買嗎？"
         
@@ -1016,11 +1107,11 @@ async def show_pick_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     country = query.data.replace("pick_card_", "")
     
-    # 獲取該國家的所有可用卡片
+    # 獲取該國家的所有可用卡片 - 從cards表（裸庫）
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
     c.execute("""SELECT id, card_number, expiry_date, security_code, price 
-                 FROM products 
+                 FROM cards 
                  WHERE country = ? AND status = 'available' 
                  ORDER BY price ASC""", (country,))
     cards = c.fetchall()
@@ -1065,12 +1156,30 @@ async def handle_multiple_purchase(update: Update, context: ContextTypes.DEFAULT
     card_details = []
     total_price = 0
     
+    # 檢查是否是隨機購買（從callback_data判斷）
+    is_random_purchase = "random" in query.data
+    
     for card_id in card_ids:
-        c.execute("SELECT * FROM products WHERE id = ? AND status = 'available'", (int(card_id),))
+        # 先嘗試從cards表查找
+        c.execute("SELECT * FROM cards WHERE id = ? AND status = 'available'", (int(card_id),))
         card = c.fetchone()
         if card:
-            card_details.append(card)
-            total_price += card[6]  # price column
+            card_details.append(('naked', card))
+            # 根據購買方式設置價格
+            if is_random_purchase:
+                total_price += 2.50  # 隨機購買價格
+            else:
+                total_price += card[5]  # 挑選購買使用原價格
+        else:
+            # 如果不在cards表，嘗試full_data表
+            c.execute("SELECT * FROM full_data WHERE id = ? AND status = 'available'", (int(card_id),))
+            card = c.fetchone()
+            if card:
+                card_details.append(('full', card))
+                if is_random_purchase:
+                    total_price += 4.00  # 全資料隨機購買價格
+                else:
+                    total_price += card[6]  # 全資料挑選購買價格
     
     if not card_details:
         text = "❌ 選中的卡片已不可用"
@@ -1078,8 +1187,8 @@ async def handle_multiple_purchase(update: Update, context: ContextTypes.DEFAULT
     else:
         # 創建訂單
         order_ids = []
-        for card in card_details:
-            order_id = create_order(user_id, username, card[0])
+        for card_type, card in card_details:
+            order_id = create_order(user_id, username, card[0], card_type)
             if order_id:
                 order_ids.append(order_id)
         
@@ -1089,15 +1198,24 @@ async def handle_multiple_purchase(update: Update, context: ContextTypes.DEFAULT
 
 📋 訂單詳情：
 """
-            for i, card in enumerate(card_details):
-                card_id, card_number, expiry_date, security_code, country, price, status, created_time = card
+            for i, (card_type, card) in enumerate(card_details):
+                if card_type == 'naked':
+                    card_id, card_number, expiry_date, security_code, country, price, status, created_time = card
+                    actual_price = 2.50 if is_random_purchase else price
+                    card_info = ""
+                else:  # full
+                    card_id, card_number, expiry_date, security_code, country, personal_info, price, status, created_time = card
+                    actual_price = 4.00 if is_random_purchase else price
+                    card_info = f"個人信息: {personal_info[:50]}...\n"
+                
+                purchase_type = "隨機購買" if is_random_purchase else "挑選購買"
                 text += f"""
-💳 卡片 {i+1}:
+💳 卡片 {i+1} ({card_type}):
 卡號: {card_number}
 到期: {expiry_date}
 密鑰: {security_code}
 國家: {country}
-價格: ${price}
+{card_info}價格: ${actual_price:.2f} ({purchase_type})
 ➖➖➖➖➖➖➖➖➖
 """
             
@@ -1141,11 +1259,14 @@ async def handle_multiple_purchase(update: Update, context: ContextTypes.DEFAULT
 async def show_special_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # 獲取低價卡片
+    # 獲取低價卡片 - 從兩個表中查詢
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM products WHERE status = 'available' AND price < 15")
-    special_cards = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM cards WHERE status = 'available' AND price < 15")
+    naked_special = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM full_data WHERE status = 'available' AND price < 20")
+    full_special = c.fetchone()[0]
+    special_cards = naked_special + full_special
     conn.close()
     
     text = f"""
@@ -1166,19 +1287,338 @@ async def show_special_price(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def show_full_fund(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    text = """
-💰 全資卡頭
-
-高額度卡片，適合大額交易
-安全可靠，成功率高
-
-請聯繫客服獲取詳細信息
-    """
+    # 獲取全資料庫存統計
+    conn = sqlite3.connect(config.DATABASE_NAME)
+    c = conn.cursor()
+    c.execute("""SELECT country, COUNT(*) as count, MIN(price) as min_price, MAX(price) as max_price
+                 FROM full_data 
+                 WHERE status = 'available' 
+                 GROUP BY country 
+                 ORDER BY count DESC""")
+    countries_data = c.fetchall()
+    conn.close()
     
-    keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+    if not countries_data:
+        text = "❌ 暫無可用全資料庫存"
+        keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+    else:
+        text = "💰 全資料卡頭庫存\n\n"
+        
+        keyboard = []
+        for country, count, min_price, max_price in countries_data:
+            if min_price == max_price:
+                price_range = f"${min_price:.2f}"
+            else:
+                price_range = f"${min_price:.2f}-${max_price:.2f}"
+            
+            button_text = f"🌍 {country} | 庫存:{count} | {price_range}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"full_country_{country}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await safe_edit_message(query, text, reply_markup)
+
+# 全資料國家詳情
+async def show_full_country_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    # 從callback_data中提取國家名
+    country = query.data.replace("full_country_", "")
+    
+    # 獲取該國家的全資料卡片統計
+    conn = sqlite3.connect(config.DATABASE_NAME)
+    c = conn.cursor()
+    c.execute("""SELECT COUNT(*), MIN(price), MAX(price) 
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available'""", (country,))
+    count, min_price, max_price = c.fetchone()
+    
+    # 獲取不同價格區間的統計
+    c.execute("""SELECT price, COUNT(*) 
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available' 
+                 GROUP BY price 
+                 ORDER BY price""", (country,))
+    price_stats = c.fetchall()
+    conn.close()
+    
+    if count == 0:
+        text = f"❌ {country} 暫無可用全資料卡片"
+        keyboard = [[InlineKeyboardButton("🔙 返回全資料", callback_data="full_fund")]]
+    else:
+        text = f"💰 {country} 全資料卡頭\n\n"
+        text += f"庫存數量: {count}\n"
+        text += f"價格範圍: ${min_price:.2f} - ${max_price:.2f}\n\n"
+        
+        # 顯示價格統計
+        text += "價格詳情:\n"
+        for price, price_count in price_stats:
+            text += f"${price:.2f} USDT - {price_count}張\n"
+        
+        text += "\n全資料包含完整個人信息，適合高級用途"
+        
+        # 構建按鈕
+        keyboard = [
+            [InlineKeyboardButton("🔍 查看實時卡頭", callback_data=f"full_realtime_{country}")],
+            [
+                InlineKeyboardButton("🎲 隨機購買", callback_data=f"full_random_{country}"),
+                InlineKeyboardButton("🎯 挑選卡頭", callback_data=f"full_pick_{country}")
+            ],
+            [InlineKeyboardButton("🔙 返回全資料", callback_data="full_fund")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 全資料實時卡頭
+async def show_full_realtime_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    country = query.data.replace("full_realtime_", "")
+    
+    # 獲取該國家的全資料卡片
+    conn = sqlite3.connect(config.DATABASE_NAME)
+    c = conn.cursor()
+    c.execute("""SELECT id, card_number, expiry_date, security_code, price, personal_info 
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available' 
+                 ORDER BY price ASC 
+                 LIMIT 10""", (country,))
+    cards = c.fetchall()
+    conn.close()
+    
+    text = f"💰 {country} 全資料實時卡頭\n\n"
+    
+    keyboard = []
+    for card_id, card_number, expiry_date, security_code, price, personal_info in cards:
+        masked_number = card_number[:4] + "****" + card_number[-4:]
+        # 顯示部分個人信息
+        info_preview = personal_info[:30] + "..." if len(personal_info) > 30 else personal_info
+        button_text = f"💳 {masked_number} | {expiry_date} | ${price:.2f}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"buy_full_{card_id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 全資料隨機購買
+async def handle_full_random_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    country = query.data.replace("full_random_", "")
+    
+    # 隨機選擇一張卡片
+    conn = sqlite3.connect(config.DATABASE_NAME)
+    c = conn.cursor()
+    c.execute("""SELECT id, card_number, expiry_date, security_code, price, personal_info 
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available' 
+                 ORDER BY RANDOM() 
+                 LIMIT 1""", (country,))
+    card = c.fetchone()
+    conn.close()
+    
+    if not card:
+        text = f"❌ {country} 暫無可用全資料卡片"
+        keyboard = [[InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")]]
+    else:
+        card_id, card_number, expiry_date, security_code, price, personal_info = card
+        masked_number = card_number[:4] + "****" + card_number[-4:]
+        
+        # 隨機購買使用特殊價格
+        random_price = 4.00
+        
+        text = f"🎲 隨機選中的全資料卡片\n\n"
+        text += f"💳 卡號: {masked_number}\n"
+        text += f"📅 到期: {expiry_date}\n"
+        text += f"💰 隨機購買價格: ${random_price:.2f} USDT\n"
+        text += f"🌍 國家: {country}\n"
+        text += f"👤 個人信息預覽: {personal_info[:50]}...\n\n"
+        text += "確認購買此卡片嗎？"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_full_{card_id}")],
+            [InlineKeyboardButton("🎲 重新隨機", callback_data=f"full_random_{country}")],
+            [InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 全資料挑選卡頭
+async def show_full_pick_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    country = query.data.replace("full_pick_", "")
+    
+    # 獲取該國家的全資料卡片
+    conn = sqlite3.connect(config.DATABASE_NAME)
+    c = conn.cursor()
+    c.execute("""SELECT id, card_number, expiry_date, security_code, price, personal_info 
+                 FROM full_data 
+                 WHERE country = ? AND status = 'available' 
+                 ORDER BY price ASC""", (country,))
+    cards = c.fetchall()
+    conn.close()
+    
+    text = f"🎯 {country} 全資料卡頭挑選\n\n"
+    text += "請選擇您要購買的卡片："
+    
+    keyboard = []
+    for card_id, card_number, expiry_date, security_code, price, personal_info in cards[:15]:  # 限制顯示15張
+        masked_number = card_number[:4] + "****" + card_number[-4:]
+        info_preview = personal_info.split('|')[0] if '|' in personal_info else personal_info[:20]
+        button_text = f"💳 {masked_number} | {expiry_date} | ${price:.2f} | {info_preview}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"buy_full_{card_id}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 返回上一步", callback_data=f"full_country_{country}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await safe_edit_message(query, text, reply_markup)
+
+# 處理全資料購買
+async def handle_full_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    query = update.callback_query
+    
+    # 獲取卡片詳情
+    card = get_card_details(card_id, 'full')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, personal_info, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    masked_number = card_number[:4] + "****" + card_number[-4:]
+    info_preview = personal_info[:100] + "..." if len(personal_info) > 100 else personal_info
+    
+    text = f"""
+💰 全資料卡片詳情
+
+💳 卡號: {masked_number}
+📅 到期日期: {expiry_date}
+🔒 安全碼: ***
+🌍 國家: {country}
+👤 個人信息: {info_preview}
+💰 價格: ${price:.2f} USDT
+
+⚠️ 購買後將顯示完整信息
+確認購買此卡片嗎？
+    """
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ 確認購買", callback_data=f"confirm_full_{card_id}")],
+        [InlineKeyboardButton("🔙 返回", callback_data="full_fund")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await safe_edit_message(query, text, reply_markup)
+
+# 確認全資料購買
+async def confirm_full_purchase(update: Update, context: ContextTypes.DEFAULT_TYPE, card_id: int):
+    query = update.callback_query
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name
+    
+    # 檢查是否是隨機購買（從callback_data判斷）
+    is_random_purchase = "random" in query.data
+    
+    # 檢查用戶餘額
+    current_balance = wallet_manager.get_balance(user_id)
+    card = get_card_details(card_id, 'full')
+    
+    if not card:
+        await safe_edit_message(query, "❌ 卡片不存在")
+        return
+    
+    card_id, card_number, expiry_date, security_code, country, personal_info, price, status, created_at = card
+    
+    if status != 'available':
+        await safe_edit_message(query, "❌ 此卡片已售出")
+        return
+    
+    # 根據購買方式設置價格
+    if is_random_purchase:
+        actual_price = 4.00  # 隨機購買價格
+        purchase_type = "隨機購買"
+    else:
+        actual_price = price  # 挑選購買使用原價格
+        purchase_type = "挑選購買"
+    
+    if current_balance < actual_price:
+        text = f"""
+❌ 餘額不足
+
+當前餘額: ${current_balance:.2f} USDT
+需要金額: ${actual_price:.2f} USDT ({purchase_type})
+缺少金額: ${actual_price - current_balance:.2f} USDT
+
+請先充值後再購買
+        """
+        keyboard = [
+            [InlineKeyboardButton("💰 立即充值", callback_data="account_recharge")],
+            [InlineKeyboardButton("🔙 返回", callback_data="full_fund")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await safe_edit_message(query, text, reply_markup)
+        return
+    
+    # 創建訂單
+    order_id = create_order(user_id, username, card_id, 'full')
+    
+    if order_id:
+        # 扣除餘額
+        wallet_manager.deduct_balance(user_id, actual_price, f"{purchase_type}全資料卡片 #{card_id}")
+        
+        text = f"""
+✅ 購買成功！
+
+💳 卡號: {card_number}
+📅 到期日期: {expiry_date}
+🔒 安全碼: {security_code}
+🌍 國家: {country}
+👤 完整個人信息:
+{personal_info}
+
+💰 支付金額: ${actual_price:.2f} USDT ({purchase_type})
+📋 訂單號: #{order_id}
+
+⚠️ 請妥善保存此信息
+        """
+        
+        keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await safe_edit_message(query, text, reply_markup)
+        
+        # 通知管理員
+        admin_text = f"""
+🛒 新的全資料訂單
+
+用戶: {username} (ID: {user_id})
+卡片: {card_number} ({country})
+金額: ${actual_price:.2f} USDT ({purchase_type})
+訂單ID: {order_id}
+時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        """
+        
+        for admin_id in config.ADMIN_IDS:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=admin_text)
+            except Exception as e:
+                logger.error(f"無法通知管理員 {admin_id}: {e}")
+    else:
+        text = "❌ 訂單創建失敗，請重試"
+        keyboard = [[InlineKeyboardButton("🔙 返回主選單", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await safe_edit_message(query, text, reply_markup)
 
 # 語言設置
 async def set_language_english(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1217,16 +1657,31 @@ async def set_language_chinese(update: Update, context: ContextTypes.DEFAULT_TYP
 async def show_price_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
-    # 獲取價格統計
+    # 獲取價格統計 - 從兩個表中查詢
     conn = sqlite3.connect(config.DATABASE_NAME)
     c = conn.cursor()
-    c.execute("SELECT country, MIN(price), MAX(price), COUNT(*) FROM products WHERE status = 'available' GROUP BY country")
-    price_data = c.fetchall()
+    
+    # 裸庫價格統計
+    c.execute("SELECT country, MIN(price), MAX(price), COUNT(*), 'naked' as type FROM cards WHERE status = 'available' GROUP BY country")
+    naked_data = c.fetchall()
+    
+    # 全資料價格統計
+    c.execute("SELECT country, MIN(price), MAX(price), COUNT(*), 'full' as type FROM full_data WHERE status = 'available' GROUP BY country")
+    full_data = c.fetchall()
+    
+    price_data = naked_data + full_data
     conn.close()
     
     text = "💰 售價信息\n\n"
-    for country, min_price, max_price, count in price_data:
-        text += f"{country}: ${min_price}-${max_price} ({count}張)\n"
+    text += "🔒 裸庫卡片:\n"
+    for country, min_price, max_price, count, card_type in price_data:
+        if card_type == 'naked':
+            text += f"{country}: ${min_price:.2f}-${max_price:.2f} ({count}張)\n"
+    
+    text += "\n💰 全資料卡片:\n"
+    for country, min_price, max_price, count, card_type in price_data:
+        if card_type == 'full':
+            text += f"{country}: ${min_price:.2f}-${max_price:.2f} ({count}張)\n"
     
     text += "\n💳 支付方式: USDT (TRC20)"
     
